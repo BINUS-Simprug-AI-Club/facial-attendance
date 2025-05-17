@@ -68,9 +68,7 @@ Before using the recognition system, you need to build a dataset of faces:
 5. **Visual Feedback**: Recognized individuals receive a confirmation message with a motivational quote directly on the screen.
 
 ## Attendance Storage
-Attendance is stored in two ways:
-1. **Firebase Database**: Records are stored in Firestore with the date as the document ID
-2. **Interactive Viewing**: Press 'v' during operation to view today's attendance records
+**Firebase Database**: Records are stored in Firestore with the date as the document ID
 
 ## Firebase Integration
 The system uses Firebase Firestore to store attendance data and Firebase Storage for face images:
