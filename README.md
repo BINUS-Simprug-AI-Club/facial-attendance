@@ -10,7 +10,7 @@ This facial recognition system provides automated attendance tracking using comp
 - Cloud-based attendance storage with Firebase
 - Interactive attendance viewing
 - Late arrival tracking based on configurable time threshold
-- Display of motivational quotes upon attendance registration
+- Display of motivational quotes (SPIRIT Values and IB Learner Profile) upon attendance registration
 - Visual confirmation overlay for successful attendance
 - Facial landmark detection for enhanced recognition
 - Performance optimization settings
