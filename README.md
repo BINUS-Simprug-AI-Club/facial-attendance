@@ -19,7 +19,7 @@ This facial recognition system provides automated attendance tracking using comp
 ## Files in this Project
 - `v1.2.py`: The main facial recognition and attendance tracking program with Firebase integration
 - `make_dataset.py`: Script for creating the facial recognition database
-- `shape_predictor_68_face_landmarks.dat`: Required for facial landmark detection (must be downloaded separately)
+- `shape_predictor_68_face_landmarks.dat`: Required for facial landmark detection (must be downloaded separately at https://github.com/davisking/dlib-models/blob/master/shape_predictor_68_face_landmarks.dat.bz2)
 - `serviceAccountKey.json`: Firebase credentials file
 
 ## Dependencies
