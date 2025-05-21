@@ -16,11 +16,11 @@ from datetime import datetime, time as dt_time
 
 # Third-party imports
 import cv2
-import dlib
 import face_recognition
 import numpy as np
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
+import face_alignment  # Add face-alignment package
 
 # Initialize Firebase
 cred = credentials.Certificate("serviceAccountKey.json")
@@ -30,7 +30,7 @@ db = firestore.client()
 # Configuration settings
 CONFIG = {
     # Recognition settings
-    "tolerance": 0.35,              # Face matching threshold (lower = stricter)
+    "tolerance": 0.3,              # Face matching threshold (lower = stricter)
     "frame_resize": 0.25,           # Resize factor for processing (smaller = faster)
     "skip_frames": 2,               # Only process every nth frame
     "enhanced_facial_recognition": True,  # Use enhanced recognition features
@@ -45,8 +45,9 @@ CONFIG = {
     # Attendance settings
     "latest_login_time": "07:30",   # Latest time to login without being marked late
     
-    # File paths
-    "facial_landmarks_path": "shape_predictor_68_face_landmarks.dat", # Path to facial landmarks model
+    # HRNet settings
+    "device": "cpu",                # Device for face alignment model: 'cpu' or 'cuda'
+    "first_run_warning": True,      # Show warning about first-run model download
 }
 
 # Motivational quotes based on BINUS Values and IB Learner Profile
@@ -83,16 +84,60 @@ facial_landmark_predictor = None
 
 
 def initialize_landmark_predictor():
-    """Initialize the facial landmark predictor if available."""
+    """Initialize the facial landmark predictor using face-alignment with HRNet."""
     global facial_landmark_predictor
     
-    print("🔄 Loading facial landmark predictor...")
+    print("🔄 Loading HRNet facial landmark predictor...")
     try:
-        facial_landmark_predictor = dlib.shape_predictor(CONFIG["facial_landmarks_path"])
-        print("✅ Facial landmark predictor loaded successfully!")
+        # First run warning
+        if CONFIG["first_run_warning"]:
+            print("⚠️ Note: On first run, face-alignment will download model weights (~100MB)")
+            print("⚠️ This requires internet connection and may take a few minutes")
+        
+        # Initialize face alignment with HRNet backbone
+        # The enum is "TWO_D" not "_2D"
+        facial_landmark_predictor = face_alignment.FaceAlignment(
+            face_alignment.LandmarksType.TWO_D,  # Fixed enum value
+            device=CONFIG["device"],
+            flip_input=False
+        )
+        print("✅ HRNet facial landmark predictor loaded successfully!")
         return True
+    except ImportError:
+        print("❌ Error: face-alignment package not installed.")
+        print("⚠️ Please install it using: pip install face-alignment")
+        CONFIG["show_landmarks"] = False
+        return False
+    except AttributeError as e:
+        # Handle case where enum value might have different name in different versions
+        print(f"❌ Error with landmark type: {e}")
+        print("⚠️ Trying alternative enum value...")
+        try:
+            # Try with the most common alternative name
+            facial_landmark_predictor = face_alignment.FaceAlignment(
+                face_alignment.LandmarksType._2D if hasattr(face_alignment.LandmarksType, '_2D') else 
+                getattr(face_alignment.LandmarksType, '2D', None) if hasattr(face_alignment.LandmarksType, '2D') else
+                getattr(face_alignment.LandmarksType, 'D2', None) if hasattr(face_alignment.LandmarksType, 'D2') else
+                0,  # Fallback to first enum value (usually 2D)
+                device=CONFIG["device"],
+                flip_input=False
+            )
+            print("✅ HRNet facial landmark predictor loaded with alternative enum!")
+            return True
+        except Exception as e2:
+            print(f"❌ Still error loading HRNet: {e2}")
+            CONFIG["show_landmarks"] = False
+            return False
+    except RuntimeError as e:
+        if "CUDA" in str(e):
+            print("❌ CUDA error: HRNet couldn't use GPU. Switching to CPU...")
+            CONFIG["device"] = "cpu"
+            return initialize_landmark_predictor()
+        print(f"❌ Error loading HRNet: {str(e)}")
+        CONFIG["show_landmarks"] = False
+        return False
     except Exception as e:
-        print(f"❌ Error loading facial landmark predictor: {str(e)}")
+        print(f"❌ Error loading HRNet: {str(e)}")
         print("⚠️ Continuing without facial landmarks detection.")
         CONFIG["show_landmarks"] = False
         return False
@@ -331,19 +376,39 @@ def display_thank_you_message(frame):
 
 
 def draw_facial_landmarks(frame, face_coords):
-    """Draw facial landmarks on the detected face."""
-    if not CONFIG["show_landmarks"] or not CONFIG["enhanced_facial_recognition"]:
+    """Draw facial landmarks on the detected face using HRNet."""
+    if not CONFIG["show_landmarks"] or not CONFIG["enhanced_facial_recognition"] or facial_landmark_predictor is None:
         return
         
     left, top, right, bottom = face_coords
     try:
-        dlib_rect = dlib.rectangle(left, top, right, bottom)
-        shape = facial_landmark_predictor(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), dlib_rect)
+        # Safety check for region dimensions
+        if right <= left or bottom <= top:
+            return
+            
+        # Extract face region with some margin
+        face_region = frame[max(0, top-30):min(frame.shape[0], bottom+30), 
+                            max(0, left-30):min(frame.shape[1], right+30)]
         
-        for i in range(68):
-            x, y = shape.part(i).x, shape.part(i).y
-            cv2.circle(frame, (x, y), 2, (0, 255, 255), -1)
-    except Exception:
+        if face_region.size == 0 or face_region.shape[0] <= 0 or face_region.shape[1] <= 0:
+            return
+            
+        # Predict landmarks using HRNet
+        preds = facial_landmark_predictor.get_landmarks_from_image(face_region)
+        
+        if preds and len(preds) > 0:
+            landmarks = preds[0]
+            
+            # Adjust coordinates to the original frame
+            x_offset = max(0, left-30)
+            y_offset = max(0, top-30)
+            
+            # Draw landmarks
+            for point in landmarks:
+                x, y = int(point[0] + x_offset), int(point[1] + y_offset)
+                cv2.circle(frame, (x, y), 2, (0, 255, 255), -1)
+    except Exception as e:
+        # Silent fail for landmark drawing failures
         pass
 
 
