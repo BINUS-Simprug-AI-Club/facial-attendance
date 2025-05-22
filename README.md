@@ -10,26 +10,25 @@ This facial recognition system provides automated attendance tracking using comp
 - Cloud-based attendance storage with Firebase
 - Interactive attendance viewing
 - Late arrival tracking based on configurable time threshold
-- Display of motivational quotes (SPIRIT Values and IB Learner Profile) upon attendance registration
+- Display of motivational quotes upon attendance registration
 - Visual confirmation overlay for successful attendance
-- Facial landmark detection for enhanced recognition
+- Advanced facial landmark detection using HRNet
 - Performance optimization settings
 - Caching of facial encodings for faster startup
 
 ## Files in this Project
-- `v1.2.py`: The main facial recognition and attendance tracking program with Firebase integration
+- `v2.py`: The main facial recognition system with HRNet landmark detection and Firebase integration
 - `make_dataset.py`: Script for creating the facial recognition database
-- `shape_predictor_68_face_landmarks.dat`: Required for facial landmark detection (must be downloaded separately at https://github.com/davisking/dlib-models/blob/master/shape_predictor_68_face_landmarks.dat.bz2)
-- `serviceAccountKey.json`: Firebase credentials file
+- `serviceAccountKey.json`: Firebase credentials file (must be set up separately)
 
 ## Dependencies
 - OpenCV (cv2)
 - face_recognition
-- dlib
 - numpy
 - pickle
 - datetime
 - firebase-admin
+- face-alignment (for HRNet facial landmark detection)
 
 ## Configuration Options
 The program includes a CONFIG dictionary with the following adjustable settings:
@@ -43,8 +42,9 @@ The program includes a CONFIG dictionary with the following adjustable settings:
 - `corner_display`: Show corner preview
 - `latest_login_time`: Time threshold for late arrival marking
 - `enhanced_facial_recognition`: Toggle enhanced features
-- `facial_landmarks_path`: Path to the facial landmark predictor file
 - `show_landmarks`: Display facial landmarks on detected faces
+- `device`: Device for HRNet model ('cpu' or 'cuda' for GPU acceleration)
+- `first_run_warning`: Toggle first-run model download warning
 
 ## Creating a Face Dataset
 Before using the recognition system, you need to build a dataset of faces:
@@ -64,11 +64,14 @@ Before using the recognition system, you need to build a dataset of faces:
 1. **Dataset Loading**: The system loads facial encodings from either a cached pickle file or builds encodings from the face image dataset in Firebase Storage.
 2. **Face Detection**: Each video frame is processed to identify face locations.
 3. **Face Recognition**: Detected faces are encoded and compared against the known dataset.
-4. **Attendance Logging**: When a match is found with sufficient confidence, attendance is recorded in Firebase and displayed to the user.
-5. **Visual Feedback**: Recognized individuals receive a confirmation message with a motivational quote directly on the screen.
+4. **Facial Landmark Detection**: HRNet is used to identify facial landmarks for enhanced recognition.
+5. **Attendance Logging**: When a match is found with sufficient confidence, attendance is recorded in Firebase and displayed to the user.
+6. **Visual Feedback**: Recognized individuals receive a confirmation message with a motivational quote directly on the screen.
 
 ## Attendance Storage
-**Firebase Database**: Records are stored in Firestore with the date as the document ID
+Attendance is stored in two ways:
+1. **Firebase Database**: Records are stored in Firestore with the date as the document ID
+2. **Interactive Viewing**: Press 'v' during operation to view today's attendance records
 
 ## Firebase Integration
 The system uses Firebase Firestore to store attendance data and Firebase Storage for face images:
@@ -80,10 +83,10 @@ The system uses Firebase Firestore to store attendance data and Firebase Storage
 
 ## Usage Instructions
 1. Ensure all dependencies are installed
-2. Download the shape_predictor_68_face_landmarks.dat file (available from dlib)
-3. Set up a Firebase project and download the serviceAccountKey.json file
+2. Set up a Firebase project and download the serviceAccountKey.json file
+3. Install face-alignment package: `pip install face-alignment`
 4. Build your face dataset using make_dataset.py
-5. Run v1.2.py
+5. Run v2.py
 6. Position yourself in front of the camera
 7. When recognized, your attendance will be recorded and confirmation displayed with your name and class
 8. Press 'q' to quit the application
@@ -95,4 +98,6 @@ The system uses Firebase Firestore to store attendance data and Firebase Storage
 - **Unknown faces**: Rebuild your dataset with more varied images of each person
 - **Firebase errors**: Check your internet connection and verify serviceAccountKey.json is valid
 - **Dataset issues**: If your face isn't recognized properly, delete the encodings.pickle file to force rebuilding the dataset
-- **Class organization**: Make sure students are consistently categorized in the same class across dataset creation and recognition
+- **HRNet download**: On first run, the face-alignment package will download model weights (~100MB) which requires internet connection
+- **CUDA errors**: If you encounter GPU errors, set device to 'cpu' in the CONFIG settings
+- **Landmark detection issues**: If facial landmarks aren't working, ensure face-alignment is installed correctly
