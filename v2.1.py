@@ -15,7 +15,7 @@ import tempfile
 from datetime import datetime, time as dt_time
 
 # Third-party imports
-import cv2
+import cv2 
 import face_recognition
 import numpy as np
 import firebase_admin
@@ -30,7 +30,7 @@ db = firestore.client()
 # Configuration settings
 CONFIG = {
     # Recognition settings
-    "tolerance": 0.3,              # Face matching threshold (lower = stricter)
+    "tolerance": 0.2,              # Face matching threshold (lower = stricter)
     "frame_resize": 0.25,           # Resize factor for processing (smaller = faster)
     "skip_frames": 2,               # Only process every nth frame
     "enhanced_facial_recognition": True,  # Use enhanced recognition features
@@ -48,6 +48,11 @@ CONFIG = {
     # HRNet settings
     "device": "cpu",                # Device for face alignment model: 'cpu' or 'cuda'
     "first_run_warning": True,      # Show warning about first-run model download
+    
+    # PIN Authentication settings
+    "confidence_threshold_for_pin": 0.65,  # Threshold below which PIN authentication is required
+    "pin_timeout": 30,              # Seconds to allow PIN entry before timeout
+    "pin_allowed_attempts": 3,      # Number of PIN attempts before timeout
 }
 
 # Motivational quotes based on BINUS Values and IB Learner Profile
@@ -81,6 +86,22 @@ thank_you_message = {
     'status': ''
 }
 facial_landmark_predictor = None
+
+# PIN authentication globals
+pin_verification_mode = {
+    'active': False,
+    'name': '',
+    'class_name': '',
+    'pin': '',
+    'correct_pin': '',
+    'start_time': 0,
+    'attempts': 0,
+    'input_pin': '',
+    'error_message': ''
+}
+
+# Dictionary to store user PINs
+user_pins = {}
 
 
 def initialize_landmark_predictor():
@@ -141,6 +162,245 @@ def initialize_landmark_predictor():
         print("⚠️ Continuing without facial landmarks detection.")
         CONFIG["show_landmarks"] = False
         return False
+
+
+def load_user_pins():
+    """Load user PINs from Firebase Storage."""
+    print("🔄 Loading user PINs from Firebase...")
+    pins = {}
+    
+    bucket = storage.bucket()
+    dataset_path = "face_dataset"
+    
+    blobs = list(bucket.list_blobs(prefix=dataset_path + "/"))
+    
+    for blob in blobs:
+        if blob.name.endswith('/pin.txt'):
+            path_parts = blob.name.split('/')
+            if len(path_parts) >= 4:
+                class_name = path_parts[1]
+                name = path_parts[2]
+                
+                try:
+                    pin_content = blob.download_as_text()
+                    user_key = f"{class_name}/{name}"
+                    pins[user_key] = pin_content.strip()
+                    print(f"✓ Loaded PIN for {name} in class {class_name}")
+                except Exception as e:
+                    print(f"⚠️ Error loading PIN for {name}: {str(e)}")
+    
+    print(f"✅ Loaded {len(pins)} user PINs from Firebase")
+    return pins
+
+
+def display_pin_pad(frame, person_name, class_name):
+    """Display a sleek, modern PIN entry UI."""
+    global pin_verification_mode
+    
+    # Create semi-transparent overlay
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (30, 30, 30), -1)
+    
+    # Set the opacity of the overlay
+    alpha = 0.85
+    frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+    
+    # Main PIN pad container
+    center_x = frame.shape[1] // 2
+    center_y = frame.shape[0] // 2
+    box_width = 400
+    box_height = 500
+    
+    start_x = center_x - box_width // 2
+    start_y = center_y - box_height // 2
+    end_x = center_x + box_width // 2
+    end_y = center_y + box_height // 2
+    
+    # Draw main container with rounded corners
+    cv2.rectangle(frame, (start_x, start_y), (end_x, end_y), (50, 50, 50), -1)
+    cv2.rectangle(frame, (start_x, start_y), (end_x, end_y), (100, 100, 100), 2)
+    
+    # Title area
+    cv2.rectangle(frame, (start_x, start_y), (end_x, start_y + 60), (0, 120, 200), -1)
+    cv2.putText(frame, "PIN Verification", (start_x + 20, start_y + 40), 
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    
+    # Display name
+    display_text = f"{person_name}"
+    if class_name:
+        display_text += f" ({class_name})"
+    
+    cv2.putText(frame, display_text, (start_x + 20, start_y + 90), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+    
+    # PIN display area
+    pin_display_y = start_y + 130
+    cv2.rectangle(frame, (start_x + 50, pin_display_y - 30), 
+                 (end_x - 50, pin_display_y + 10), (30, 30, 30), -1)
+    cv2.rectangle(frame, (start_x + 50, pin_display_y - 30), 
+                 (end_x - 50, pin_display_y + 10), (100, 100, 100), 1)
+    
+    # Show masked PIN
+    masked_pin = "•" * len(pin_verification_mode['input_pin'])
+    cv2.putText(frame, masked_pin, (start_x + 60, pin_display_y), 
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    
+    # Error message if any
+    if pin_verification_mode['error_message']:
+        cv2.putText(frame, pin_verification_mode['error_message'], 
+                   (start_x + 50, pin_display_y + 40), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
+    
+    # PIN buttons
+    buttons = [
+        '1', '2', '3',
+        '4', '5', '6',
+        '7', '8', '9',
+        'C', '0', '✓'
+    ]
+    
+    button_width = 80
+    button_height = 60
+    button_margin = 10
+    
+    button_start_y = pin_display_y + 60
+    
+    for i, button in enumerate(buttons):
+        row = i // 3
+        col = i % 3
+        
+        button_x = start_x + 50 + col * (button_width + button_margin)
+        button_y = button_start_y + row * (button_height + button_margin)
+        
+        # Button colors
+        if button == 'C':
+            button_color = (0, 80, 160)
+        elif button == '✓':
+            button_color = (0, 160, 80)
+        else:
+            button_color = (80, 80, 80)
+            
+        # Draw button
+        cv2.rectangle(frame, (button_x, button_y), 
+                     (button_x + button_width, button_y + button_height), 
+                     button_color, -1)
+        cv2.rectangle(frame, (button_x, button_y), 
+                     (button_x + button_width, button_y + button_height), 
+                     (150, 150, 150), 1)
+        
+        # Button text
+        text_x = button_x + button_width // 2 - 10
+        text_y = button_y + button_height // 2 + 10
+        cv2.putText(frame, button, (text_x, text_y), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    
+    # Instructions and timeout
+    time_left = CONFIG["pin_timeout"] - (time.time() - pin_verification_mode['start_time'])
+    time_text = f"Time remaining: {int(time_left)}s"
+    cv2.putText(frame, time_text, (start_x + 50, end_y - 40), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+    cv2.putText(frame, f"Attempts: {pin_verification_mode['attempts'] + 1}/{CONFIG['pin_allowed_attempts']}", 
+                (start_x + 50, end_y - 15), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+    
+    return frame
+
+
+def handle_pin_input(key):
+    """Process keyboard input for PIN verification mode."""
+    global pin_verification_mode
+    
+    # Handle numeric keys (0-9)
+    if ord('0') <= key <= ord('9'):
+        if len(pin_verification_mode['input_pin']) < 6:  # Limit PIN length to 6 digits
+            pin_verification_mode['input_pin'] += chr(key)
+    
+    # Handle backspace/delete/clear (multiple options for flexibility)
+    elif key in [ord('c'), ord('C'), 8, 127]:
+        pin_verification_mode['input_pin'] = ""
+        pin_verification_mode['error_message'] = ""
+    
+    # Handle enter/return for verification
+    elif key in [ord('\r'), ord('\n'), 13]:
+        verify_pin()
+
+
+def verify_pin():
+    """Verify the entered PIN."""
+    global pin_verification_mode
+    
+    if pin_verification_mode['input_pin'] == pin_verification_mode['correct_pin']:
+        # PIN is correct, log attendance
+        log_attendance(pin_verification_mode['name'], pin_verification_mode['class_name'])
+        # Reset PIN mode
+        pin_verification_mode['active'] = False
+    else:
+        # Incorrect PIN
+        pin_verification_mode['attempts'] += 1
+        pin_verification_mode['input_pin'] = ""
+        
+        if pin_verification_mode['attempts'] >= CONFIG['pin_allowed_attempts']:
+            pin_verification_mode['error_message'] = "Too many incorrect attempts. Try again later."
+            pin_verification_mode['active'] = False
+        else:
+            pin_verification_mode['error_message'] = f"Incorrect PIN. Try again. ({pin_verification_mode['attempts']}/{CONFIG['pin_allowed_attempts']})"
+
+
+def handle_mouse_click(event, x, y, flags, param):
+    """Handle mouse clicks for PIN pad UI."""
+    global pin_verification_mode
+    
+    if not pin_verification_mode['active'] or event != cv2.EVENT_LBUTTONDOWN:
+        return
+        
+    frame_width, frame_height = param
+    center_x = frame_width // 2
+    center_y = frame_height // 2
+    box_width = 400
+    box_height = 500
+    
+    start_x = center_x - box_width // 2
+    start_y = center_y - box_height // 2
+    
+    button_width = 80
+    button_height = 60
+    button_margin = 10
+    pin_display_y = start_y + 130
+    button_start_y = pin_display_y + 60
+    
+    buttons = [
+        '1', '2', '3',
+        '4', '5', '6',
+        '7', '8', '9',
+        'C', '0', '✓'
+    ]
+    
+    for i, button in enumerate(buttons):
+        row = i // 3
+        col = i % 3
+        
+        button_x = start_x + 50 + col * (button_width + button_margin)
+        button_y = button_start_y + row * (button_height + button_margin)
+        
+        # Check if click is inside this button
+        if (button_x <= x <= button_x + button_width and 
+            button_y <= y <= button_y + button_height):
+            
+            # Handle numeric buttons
+            if button in '0123456789' and len(pin_verification_mode['input_pin']) < 6:
+                pin_verification_mode['input_pin'] += button
+                pin_verification_mode['error_message'] = ""
+                
+            # Handle clear button
+            elif button == 'C':
+                pin_verification_mode['input_pin'] = ""
+                pin_verification_mode['error_message'] = ""
+                
+            # Handle verify button
+            elif button == '✓':
+                verify_pin()
+                
+            break
 
 
 def log_attendance(name, class_name=None):
@@ -416,7 +676,10 @@ def main():
     """Main function to run the facial recognition system."""
     initialize_landmark_predictor()
     
+    # Load face encodings and PINs
     known_face_encodings, known_face_names, known_face_classes = load_face_encodings()
+    global user_pins
+    user_pins = load_user_pins()
     
     video_capture = cv2.VideoCapture(0)
     
@@ -425,6 +688,12 @@ def main():
         return
     
     print("🎥 Camera initialized. Press 'q' to quit.")
+    
+    # Set up mouse callback for PIN pad interaction
+    cv2.namedWindow('Face Recognition')
+    cv2.setMouseCallback('Face Recognition', handle_mouse_click, 
+                        (video_capture.get(cv2.CAP_PROP_FRAME_WIDTH),
+                         video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     
     frame_count = 0
     fps_start_time = time.time()
@@ -438,92 +707,121 @@ def main():
             
         frame = cv2.flip(frame, CONFIG["flip_camera"])
         
-        if CONFIG["corner_display"]:
-            corner_size = (int(frame.shape[1] * 0.2), int(frame.shape[0] * 0.2))
-            corner_frame = cv2.resize(frame, corner_size)
-            
-            x_offset = frame.shape[1] - corner_size[0] - 10
-            y_offset = 10
-            
-            cv2.rectangle(frame, (x_offset-2, y_offset-2), 
-                         (x_offset + corner_size[0]+2, y_offset + corner_size[1]+2), 
-                         (255, 255, 255), 2)
-            
-            frame[y_offset:y_offset + corner_size[1], x_offset:x_offset + corner_size[0]] = corner_frame
-        
-        process_this_frame = frame_count % CONFIG["skip_frames"] == 0
-        frame_count += 1
-        
-        if time.time() - fps_start_time >= 1.0:
-            fps = frame_count / (time.time() - fps_start_time)
-            frame_count = 0
-            fps_start_time = time.time()
-        
-        if process_this_frame:
-            small_frame = cv2.resize(frame, (0, 0), fx=CONFIG["frame_resize"], fy=CONFIG["frame_resize"])
-            rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-            
-            face_locations = face_recognition.face_locations(rgb_small_frame)
-            face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
-            
-            face_names = []
-            face_classes = []
-            face_confidences = []
-            
-            for face_encoding in face_encodings:
-                name = "Unknown"
-                class_name = ""
-                confidence = 0.0
+        # Check if PIN verification mode is active
+        global pin_verification_mode
+        if pin_verification_mode['active']:
+            # Check for timeout
+            if time.time() - pin_verification_mode['start_time'] > CONFIG["pin_timeout"]:
+                pin_verification_mode['active'] = False
+                print("⏱️ PIN verification timed out")
                 
-                if len(known_face_encodings) > 0:
-                    face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-                    if len(face_distances) > 0:
-                        best_match_index = np.argmin(face_distances)
-                        best_match_distance = face_distances[best_match_index]
-                        
-                        best_match_score = 1 - best_match_distance
-                        
-                        if best_match_score >= CONFIG["tolerance"]:
-                            name = known_face_names[best_match_index]
-                            class_name = known_face_classes[best_match_index]
-                            confidence = best_match_score
+            # Display PIN pad UI
+            frame = display_pin_pad(frame, pin_verification_mode['name'], 
+                                   pin_verification_mode['class_name'])
+        else:
+            # Normal face recognition mode
+            if CONFIG["corner_display"]:
+                corner_size = (int(frame.shape[1] * 0.2), int(frame.shape[0] * 0.2))
+                corner_frame = cv2.resize(frame, corner_size)
+                
+                x_offset = frame.shape[1] - corner_size[0] - 10
+                y_offset = 10
+                
+                cv2.rectangle(frame, (x_offset-2, y_offset-2), 
+                             (x_offset + corner_size[0]+2, y_offset + corner_size[1]+2), 
+                             (255, 255, 255), 2)
+                
+                frame[y_offset:y_offset + corner_size[1], x_offset:x_offset + corner_size[0]] = corner_frame
+            
+            process_this_frame = frame_count % CONFIG["skip_frames"] == 0
+            frame_count += 1
+            
+            if time.time() - fps_start_time >= 1.0:
+                fps = frame_count / (time.time() - fps_start_time)
+                frame_count = 0
+                fps_start_time = time.time()
+            
+            if process_this_frame:
+                small_frame = cv2.resize(frame, (0, 0), fx=CONFIG["frame_resize"], fy=CONFIG["frame_resize"])
+                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+                
+                face_locations = face_recognition.face_locations(rgb_small_frame)
+                face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
+                
+                face_names = []
+                face_classes = []
+                face_confidences = []
+                
+                for face_encoding in face_encodings:
+                    name = "Unknown"
+                    class_name = ""
+                    confidence = 0.0
+                    
+                    if len(known_face_encodings) > 0:
+                        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                        if len(face_distances) > 0:
+                            best_match_index = np.argmin(face_distances)
+                            best_match_distance = face_distances[best_match_index]
                             
-                            if log_attendance(name, class_name):
-                                print(f"✔️ Attendance marked for {name}" + 
-                                      (f" in class {class_name}" if class_name else ""))
+                            best_match_score = 1 - best_match_distance
+                            
+                            if best_match_score >= CONFIG["tolerance"]:
+                                name = known_face_names[best_match_index]
+                                class_name = known_face_classes[best_match_index]
+                                confidence = best_match_score
+                                
+                                # Use PIN verification for low confidence matches
+                                if CONFIG["confidence_threshold_for_pin"] <= confidence < CONFIG["tolerance"] + 0.2:
+                                    user_key = f"{class_name}/{name}"
+                                    if user_key in user_pins:
+                                        # Activate PIN verification mode
+                                        pin_verification_mode = {
+                                            'active': True,
+                                            'name': name,
+                                            'class_name': class_name,
+                                            'correct_pin': user_pins[user_key],
+                                            'start_time': time.time(),
+                                            'attempts': 0,
+                                            'input_pin': '',
+                                            'error_message': ''
+                                        }
+                                        print(f"🔑 PIN verification required for {name} (confidence: {confidence:.2f})")
+                                    else:
+                                        print(f"⚠️ No PIN found for {name}, skipping verification")
+                                elif confidence >= CONFIG["tolerance"] + 0.2:
+                                    if log_attendance(name, class_name):
+                                        print(f"✔️ Attendance marked for {name}" + 
+                                              (f" in class {class_name}" if class_name else ""))
                 
-                face_names.append(name)
-                face_classes.append(class_name)
-                face_confidences.append(confidence)
-            
-            for (top, right, bottom, left), name, class_name, confidence in zip(
-                    face_locations, face_names, face_classes, face_confidences):
-                scale = 1.0 / CONFIG["frame_resize"]
-                top = int(top * scale)
-                right = int(right * scale)
-                bottom = int(bottom * scale)
-                left = int(left * scale)
-                
-                if name == "Unknown" or confidence < CONFIG["tolerance"]:
-                    if CONFIG["show_all_faces"]:
-                        color = (0, 0, 255) if name == "Unknown" else (0, 165, 255)
+                for (top, right, bottom, left), name, class_name, confidence in zip(
+                        face_locations, face_names, face_classes, face_confidences):
+                    scale = 1.0 / CONFIG["frame_resize"]
+                    top = int(top * scale)
+                    right = int(right * scale)
+                    bottom = int(bottom * scale)
+                    left = int(left * scale)
+                    
+                    if name == "Unknown" or confidence < CONFIG["tolerance"]:
+                        if CONFIG["show_all_faces"]:
+                            color = (0, 0, 255) if name == "Unknown" else (0, 165, 255)
+                            cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                            label = f"Unknown ({confidence:.2f})" if name == "Unknown" else f"{name} ({confidence:.2f})"
+                            cv2.putText(frame, label, (left, top - 10), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                    else:
+                        color = (0, 255, 0)
                         cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-                        label = f"Unknown ({confidence:.2f})" if name == "Unknown" else f"{name} ({confidence:.2f})"
-                        cv2.putText(frame, label, (left, top - 10), 
+                        
+                        display_name = name
+                        if class_name:
+                            display_name = f"{name} ({class_name})"
+                        
+                        cv2.putText(frame, f"{display_name} ({confidence:.2f})", (left, top - 10), 
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                else:
-                    color = (0, 255, 0)
-                    cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
                     
-                    display_name = name
-                    if class_name:
-                        display_name = f"{name} ({class_name})"
-                    
-                    cv2.putText(frame, f"{display_name} ({confidence:.2f})", (left, top - 10), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                    # Draw facial landmarks for this face
+                    draw_facial_landmarks(frame, (left, top, right, bottom))
                 
-                draw_facial_landmarks(frame, (left, top, right, bottom))
-        
         if CONFIG["display_fps"]:
             cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
@@ -535,6 +833,10 @@ def main():
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
+            
+        # Handle PIN input if in PIN verification mode
+        if pin_verification_mode['active']:
+            handle_pin_input(key)
     
     video_capture.release()
     cv2.destroyAllWindows()
