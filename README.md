@@ -18,8 +18,7 @@ This facial recognition system provides automated attendance tracking using comp
 - PIN-based backup authentication when face recognition confidence is low
 
 ## Files in this Project
-- `v2.py`: The main facial recognition system with HRNet landmark detection and Firebase integration
-- `v2.1.py`: Enhanced version with PIN authentication backup when face recognition confidence is low
+- `v2.1.py`: The main facial recognition system with HRNet landmark detection and Firebase integration and also a PIN UI when confidence is low
 - `make_dataset.py`: Script for creating the facial recognition database and collecting user PINs
 - `serviceAccountKey.json`: Firebase credentials file (must be set up separately)
 
@@ -57,7 +56,7 @@ Before using the recognition system, you need to build a dataset of faces:
 1. Run `make_dataset.py`
 2. Enter your name when prompted
 3. Enter your class name when prompted
-4. Enter a 4-6 digit PIN when prompted (used for backup authentication)
+4. Enter a 4 digit PIN when prompted (used for backup authentication)
 5. Position yourself in front of the camera with good lighting
 6. The script will guide you through capturing 20 images of your face:
    - Press 'c' to capture images manually one by one
@@ -104,7 +103,7 @@ The system uses Firebase Firestore to store attendance data and Firebase Storage
 2. Set up a Firebase project and download the serviceAccountKey.json file
 3. Install face-alignment package: `pip install face-alignment`
 4. Build your face dataset using make_dataset.py (including PINs)
-5. Run v2.py (standard version) or v2.1.py (with PIN authentication)
+5. Run v2.1.py (with PIN authentication)
 6. Position yourself in front of the camera
 7. When recognized with high confidence, your attendance will be recorded automatically
 8. If recognition confidence is moderate, you'll be prompted to enter your PIN
