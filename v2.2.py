@@ -21,6 +21,7 @@ import numpy as np
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
 import face_alignment  # Add face-alignment package
+import concurrent.futures  # For parallel processing
 
 # Initialize Firebase
 cred = credentials.Certificate("serviceAccountKey.json")
@@ -30,7 +31,7 @@ db = firestore.client()
 # Configuration settings
 CONFIG = {
     # Recognition settings
-    "tolerance": 0.2,              # Face matching threshold (lower = stricter)
+    "tolerance": 0.65,              # Face matching threshold (lower = stricter)
     "frame_resize": 0.25,           # Resize factor for processing (smaller = faster)
     "skip_frames": 2,               # Only process every nth frame
     "enhanced_facial_recognition": True,  # Use enhanced recognition features
@@ -50,9 +51,19 @@ CONFIG = {
     "first_run_warning": True,      # Show warning about first-run model download
     
     # PIN Authentication settings
-    "confidence_threshold_for_pin": 0.65,  # Threshold below which PIN authentication is required
+    "confidence_threshold_for_pin": 0.55,  # Threshold below which PIN authentication is required
     "pin_timeout": 30,              # Seconds to allow PIN entry before timeout
     "pin_allowed_attempts": 3,      # Number of PIN attempts before timeout
+    
+    # Advanced Recognition settings
+    "min_recognition_threshold": 0.5,     # Minimum threshold to consider a possible match
+    "confident_recognition_threshold": 0.65, # Threshold for confident recognition without verification
+    "use_gpu_if_available": True,         # Try to use GPU acceleration if available
+    "adaptive_processing": True,          # Dynamically adjust processing parameters based on load
+    "max_parallel_recognitions": 5,       # Maximum number of parallel face recognitions
+    "face_tracking_enabled": True,        # Enable face tracking to improve performance
+    "tracking_quality_threshold": 7,      # Quality threshold for the tracker
+    "max_tracking_age": 30,               # Maximum number of frames to keep tracking without recognition
 }
 
 # Motivational quotes based on BINUS Values and IB Learner Profile
@@ -672,6 +683,121 @@ def draw_facial_landmarks(frame, face_coords):
         pass
 
 
+# Class for face tracking to improve performance
+class FaceTracker:
+    def __init__(self, max_disappeared=30, min_quality=7):
+        """
+        Initialize a face tracker
+        
+        Args:
+            max_disappeared: Maximum number of frames a face can disappear before being removed
+            min_quality: Minimum quality score to consider a track valid
+        """
+        self.next_id = 0
+        self.tracks = {}  # Dictionary of active face tracks
+        self.disappeared = {}  # Count of frames since last detection
+        self.max_disappeared = max_disappeared
+        self.min_quality = min_quality
+        
+    def register(self, face_rect, face_encoding, name="Unknown", class_name="", confidence=0.0):
+        """
+        Register a new face with the tracker
+        """
+        track_id = self.next_id
+        self.tracks[track_id] = {
+            "rect": face_rect,
+            "encoding": face_encoding,
+            "name": name,
+            "class_name": class_name,
+            "confidence": confidence,
+            "quality": 10  # Initial quality score
+        }
+        self.disappeared[track_id] = 0
+        self.next_id += 1
+        return track_id
+        
+    def update(self, face_locations, face_encodings, face_names=None, face_classes=None, face_confidences=None):
+        """
+        Update tracker with new detections
+        """
+        if face_names is None:
+            face_names = ["Unknown"] * len(face_locations)
+        if face_classes is None:
+            face_classes = [""] * len(face_locations)
+        if face_confidences is None:
+            face_confidences = [0.0] * len(face_locations)
+            
+        # If no faces detected, mark all tracks as disappeared
+        if len(face_locations) == 0:
+            for track_id in list(self.disappeared.keys()):
+                self.disappeared[track_id] += 1
+                if self.disappeared[track_id] > self.max_disappeared:
+                    self.tracks.pop(track_id, None)
+                    self.disappeared.pop(track_id, None)
+            return self.tracks
+        
+        # If no existing tracks, register all faces
+        if len(self.tracks) == 0:
+            for i, (rect, encoding, name, class_name, confidence) in enumerate(
+                zip(face_locations, face_encodings, face_names, face_classes, face_confidences)):
+                self.register(rect, encoding, name, class_name, confidence)
+            return self.tracks
+            
+        # Match new detections with existing tracks
+        track_ids = list(self.tracks.keys())
+        track_encodings = [self.tracks[tid]["encoding"] for tid in track_ids]
+        
+        # Map each face to the best matching track
+        matched_tracks = {}
+        unmatched_detections = list(range(len(face_locations)))
+        
+        for i, face_encoding in enumerate(face_encodings):
+            if len(track_encodings) == 0:  # Skip if no track encodings available
+                continue
+                
+            # Calculate distances to all tracks
+            face_distances = face_recognition.face_distance(track_encodings, face_encoding)
+            best_match_index = np.argmin(face_distances)
+            min_distance = face_distances[best_match_index]
+            
+            # Consider it a match if distance is below threshold
+            if min_distance < 0.6:  # This threshold determines how strict the tracking matching is
+                track_id = track_ids[best_match_index]
+                matched_tracks[track_id] = i
+                if i in unmatched_detections:
+                    unmatched_detections.remove(i)
+                    
+                # Update track with new information
+                self.tracks[track_id]["rect"] = face_locations[i]
+                
+                # Only update name if the new detection has a known name with good confidence
+                if face_names[i] != "Unknown" and face_confidences[i] > self.tracks[track_id]["confidence"]:
+                    self.tracks[track_id]["name"] = face_names[i]
+                    self.tracks[track_id]["class_name"] = face_classes[i]
+                    self.tracks[track_id]["confidence"] = face_confidences[i]
+                    
+                # Increase quality score for matched tracks (capped at 10)
+                self.tracks[track_id]["quality"] = min(10, self.tracks[track_id]["quality"] + 1)
+                self.disappeared[track_id] = 0
+        
+        # Handle tracks that weren't matched
+        for track_id in track_ids:
+            if track_id not in matched_tracks:
+                self.disappeared[track_id] += 1
+                # Decrease quality score
+                self.tracks[track_id]["quality"] = max(0, self.tracks[track_id]["quality"] - 1)
+                
+                if self.disappeared[track_id] > self.max_disappeared or self.tracks[track_id]["quality"] < self.min_quality:
+                    self.tracks.pop(track_id, None)
+                    self.disappeared.pop(track_id, None)
+        
+        # Register new detections that didn't match any track
+        for i in unmatched_detections:
+            self.register(face_locations[i], face_encodings[i], 
+                         face_names[i], face_classes[i], face_confidences[i])
+        
+        return self.tracks
+
 def main():
     """Main function to run the facial recognition system."""
     initialize_landmark_predictor()
@@ -695,9 +821,24 @@ def main():
                         (video_capture.get(cv2.CAP_PROP_FRAME_WIDTH),
                          video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     
+    # Initialize face tracker if enabled
+    face_tracker = None
+    if CONFIG["face_tracking_enabled"]:
+        face_tracker = FaceTracker(
+            max_disappeared=CONFIG["max_tracking_age"],
+            min_quality=CONFIG["tracking_quality_threshold"]
+        )
+    
     frame_count = 0
     fps_start_time = time.time()
     fps = 0
+    
+    # Dynamic parameters
+    current_resize_factor = CONFIG["frame_resize"]
+    current_skip_frames = CONFIG["skip_frames"]
+    
+    # For parallel processing
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=CONFIG["max_parallel_recognitions"])
     
     while True:
         ret, frame = video_capture.read()
@@ -733,7 +874,7 @@ def main():
                 
                 frame[y_offset:y_offset + corner_size[1], x_offset:x_offset + corner_size[0]] = corner_frame
             
-            process_this_frame = frame_count % CONFIG["skip_frames"] == 0
+            process_this_frame = frame_count % current_skip_frames == 0
             frame_count += 1
             
             if time.time() - fps_start_time >= 1.0:
@@ -741,86 +882,173 @@ def main():
                 frame_count = 0
                 fps_start_time = time.time()
             
-            if process_this_frame:
-                small_frame = cv2.resize(frame, (0, 0), fx=CONFIG["frame_resize"], fy=CONFIG["frame_resize"])
+            # Use tracking or perform detection
+            active_faces = {}
+            
+            if CONFIG["face_tracking_enabled"] and face_tracker is not None and not process_this_frame:
+                # Use existing tracks without performing new detections
+                active_faces = face_tracker.tracks
+            elif process_this_frame:
+                small_frame = cv2.resize(frame, (0, 0), fx=current_resize_factor, fy=current_resize_factor)
                 rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
                 
+                # Detect faces in the frame
                 face_locations = face_recognition.face_locations(rgb_small_frame)
-                face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
                 
-                face_names = []
-                face_classes = []
-                face_confidences = []
+                # Adaptive processing: adjust parameters based on number of detected faces
+                if CONFIG["adaptive_processing"]:
+                    faces_count = len(face_locations)
+                    if faces_count > 10:
+                        # Heavy load - reduce processing
+                        current_resize_factor = max(0.15, CONFIG["frame_resize"] - 0.1)
+                        current_skip_frames = CONFIG["skip_frames"] + 2
+                    elif faces_count > 5:
+                        # Moderate load
+                        current_resize_factor = max(0.2, CONFIG["frame_resize"] - 0.05)
+                        current_skip_frames = CONFIG["skip_frames"] + 1
+                    else:
+                        # Light load - return to default
+                        current_resize_factor = CONFIG["frame_resize"]
+                        current_skip_frames = CONFIG["skip_frames"]
                 
-                for face_encoding in face_encodings:
-                    name = "Unknown"
-                    class_name = ""
-                    confidence = 0.0
+                if face_locations:
+                    # Process faces in parallel for better performance
+                    face_encodings = []
+                    if len(face_locations) <= CONFIG["max_parallel_recognitions"]:
+                        # For fewer faces, process in parallel
+                        futures = [executor.submit(face_recognition.face_encodings, rgb_small_frame, [loc]) 
+                                  for loc in face_locations]
+                        for future in concurrent.futures.as_completed(futures):
+                            result = future.result()
+                            if result:
+                                face_encodings.append(result[0])
+                    else:
+                        # For many faces, use batch processing
+                        face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
                     
-                    if len(known_face_encodings) > 0:
-                        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-                        if len(face_distances) > 0:
-                            best_match_index = np.argmin(face_distances)
-                            best_match_distance = face_distances[best_match_index]
-                            
-                            best_match_score = 1 - best_match_distance
-                            
-                            if best_match_score >= CONFIG["tolerance"]:
-                                name = known_face_names[best_match_index]
-                                class_name = known_face_classes[best_match_index]
-                                confidence = best_match_score
+                    # Process face recognition with improved accuracy checks
+                    face_names = []
+                    face_classes = []
+                    face_confidences = []
+                    
+                    for face_encoding in face_encodings:
+                        name = "Unknown"
+                        class_name = ""
+                        confidence = 0.0
+                        
+                        if len(known_face_encodings) > 0:
+                            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                            if len(face_distances) > 0:
+                                best_match_index = np.argmin(face_distances)
+                                best_match_distance = face_distances[best_match_index]
                                 
-                                # Use PIN verification for low confidence matches
-                                if CONFIG["confidence_threshold_for_pin"] <= confidence < CONFIG["tolerance"] + 0.2:
-                                    user_key = f"{class_name}/{name}"
-                                    if user_key in user_pins:
-                                        # Activate PIN verification mode
-                                        pin_verification_mode = {
-                                            'active': True,
-                                            'name': name,
-                                            'class_name': class_name,
-                                            'correct_pin': user_pins[user_key],
-                                            'start_time': time.time(),
-                                            'attempts': 0,
-                                            'input_pin': '',
-                                            'error_message': ''
-                                        }
-                                        print(f"🔑 PIN verification required for {name} (confidence: {confidence:.2f})")
-                                    else:
-                                        print(f"⚠️ No PIN found for {name}, skipping verification")
-                                elif confidence >= CONFIG["tolerance"] + 0.2:
-                                    if log_attendance(name, class_name):
-                                        print(f"✔️ Attendance marked for {name}" + 
-                                              (f" in class {class_name}" if class_name else ""))
-                
-                for (top, right, bottom, left), name, class_name, confidence in zip(
-                        face_locations, face_names, face_classes, face_confidences):
-                    scale = 1.0 / CONFIG["frame_resize"]
+                                best_match_score = 1 - best_match_distance
+                                
+                                # Double threshold approach for better accuracy
+                                if best_match_score >= CONFIG["min_recognition_threshold"]:
+                                    # We have a potential match
+                                    if best_match_score >= CONFIG["confident_recognition_threshold"]:
+                                        # Confident match - mark attendance directly
+                                        name = known_face_names[best_match_index]
+                                        class_name = known_face_classes[best_match_index]
+                                        confidence = best_match_score
+                                        
+                                        if log_attendance(name, class_name):
+                                            print(f"✔️ Attendance marked for {name}" + 
+                                                  (f" in class {class_name}" if class_name else ""))
+                                    
+                                    # For matches below confident threshold but above minimum threshold
+                                    elif CONFIG["min_recognition_threshold"] <= best_match_score < CONFIG["confident_recognition_threshold"]:
+                                        # Potential match - require verification
+                                        name = known_face_names[best_match_index]
+                                        class_name = known_face_classes[best_match_index]
+                                        confidence = best_match_score
+                                        
+                                        user_key = f"{class_name}/{name}"
+                                        if user_key in user_pins:
+                                            # Activate PIN verification mode
+                                            pin_verification_mode = {
+                                                'active': True,
+                                                'name': name,
+                                                'class_name': class_name,
+                                                'correct_pin': user_pins[user_key],
+                                                'start_time': time.time(),
+                                                'attempts': 0,
+                                                'input_pin': '',
+                                                'error_message': ''
+                                            }
+                                            print(f"🔑 PIN verification required for {name} (confidence: {confidence:.2f})")
+                                        else:
+                                            # No PIN but too low confidence - mark as Unknown
+                                            name = "Unknown"
+                                            class_name = ""
+                                            print(f"⚠️ No PIN found for potential match {name}, marking as Unknown")
+                        
+                        face_names.append(name)
+                        face_classes.append(class_name)
+                        face_confidences.append(confidence)
+                    
+                    # Update face tracker with new detections
+                    if CONFIG["face_tracking_enabled"] and face_tracker is not None:
+                        active_faces = face_tracker.update(
+                            face_locations, face_encodings, face_names, face_classes, face_confidences
+                        )
+                    else:
+                        # Without tracking, create a simple dictionary of faces
+                        active_faces = {
+                            i: {
+                                "rect": loc,
+                                "name": name,
+                                "class_name": cls,
+                                "confidence": conf
+                            } for i, (loc, name, cls, conf) in enumerate(zip(
+                                face_locations, face_names, face_classes, face_confidences
+                            ))
+                        }
+            
+            # Display all active faces
+            for face_id, face_data in active_faces.items():
+                if CONFIG["face_tracking_enabled"] and face_tracker is not None:
+                    # Scale coordinates from tracking
+                    top, right, bottom, left = face_data["rect"]
+                    scale = 1.0 / current_resize_factor
                     top = int(top * scale)
                     right = int(right * scale)
                     bottom = int(bottom * scale)
                     left = int(left * scale)
-                    
-                    if name == "Unknown" or confidence < CONFIG["tolerance"]:
-                        if CONFIG["show_all_faces"]:
-                            color = (0, 0, 255) if name == "Unknown" else (0, 165, 255)
-                            cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-                            label = f"Unknown ({confidence:.2f})" if name == "Unknown" else f"{name} ({confidence:.2f})"
-                            cv2.putText(frame, label, (left, top - 10), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                    else:
-                        color = (0, 255, 0)
+                else:
+                    # Direct coordinates without tracking
+                    top, right, bottom, left = face_data["rect"]
+                    scale = 1.0 / current_resize_factor
+                    top = int(top * scale)
+                    right = int(right * scale)
+                    bottom = int(bottom * scale)
+                    left = int(left * scale)
+                
+                name = face_data["name"]
+                class_name = face_data.get("class_name", "")
+                confidence = face_data.get("confidence", 0.0)
+                
+                if name == "Unknown" or confidence < CONFIG["min_recognition_threshold"]:
+                    if CONFIG["show_all_faces"]:
+                        color = (0, 0, 255) if name == "Unknown" else (0, 165, 255)
                         cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-                        
-                        display_name = name
-                        if class_name:
-                            display_name = f"{name} ({class_name})"
-                        
-                        cv2.putText(frame, f"{display_name} ({confidence:.2f})", (left, top - 10), 
+                        label = f"Unknown ({confidence:.2f})" if name == "Unknown" else f"{name} ({confidence:.2f})"
+                        cv2.putText(frame, label, (left, top - 10), 
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                else:
+                    color = (0, 255, 0)
+                    cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
                     
-                    # Draw facial landmarks for this face
-                    draw_facial_landmarks(frame, (left, top, right, bottom))
+                    display_name = name
+                    if class_name:
+                        display_name = f"{name} ({class_name})"
+                    
+                    cv2.putText(frame, f"{display_name} ({confidence:.2f})", (left, top - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                
+                # Draw facial landmarks for this face
+                draw_facial_landmarks(frame, (left, top, right, bottom))
                 
         if CONFIG["display_fps"]:
             cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30), 
@@ -838,6 +1066,8 @@ def main():
         if pin_verification_mode['active']:
             handle_pin_input(key)
     
+    # Clean up resources
+    executor.shutdown()
     video_capture.release()
     cv2.destroyAllWindows()
     print("🔴 Face recognition system closed.")
