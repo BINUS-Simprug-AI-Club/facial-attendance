@@ -550,37 +550,41 @@ def load_face_encodings():
                 student_encodings = []
                 
                 student_path = f"{class_path}{student_name}/"
-                student_images = [blob for blob in blobs if blob.name.startswith(student_path) and blob.name.split('/')[-1]]
-                
-                temp_dir = tempfile.mkdtemp()
+                student_images = [blob for blob in blobs if blob.name.startswith(student_path) and blob.name.split('/')[-1] and 
+                                  not blob.name.endswith('/pin.txt')]
                 
                 for blob in student_images:
                     image_name = blob.name.split("/")[-1]
                     if not image_name:
                         continue
-                        
-                    temp_path = os.path.join(temp_dir, image_name)
-                    blob.download_to_filename(temp_path)
+                    
                     print(f"Processing image: {blob.name}")
+                    
+                    try:
+                        # Download image directly to memory instead of file
+                        image_bytes = blob.download_as_bytes()
+                        
+                        # Convert bytes to numpy array
+                        nparr = np.frombuffer(image_bytes, np.uint8)
+                        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                        
+                        if image is None:
+                            print(f"⚠️ Warning: Unable to decode {image_name}, skipping.")
+                            continue
 
-                    image = cv2.imread(temp_path)
-                    if image is None:
-                        print(f"⚠️ Warning: Unable to read {image_name}, skipping.")
+                        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                        
+                        face_locations = face_recognition.face_locations(rgb)
+                        if len(face_locations) > 0:
+                            encodings = face_recognition.face_encodings(rgb, face_locations)
+                            student_encodings.extend(encodings)
+                            print(f"✓ Found {len(face_locations)} faces in {image_name}")
+                        else:
+                            print(f"⚠️ No faces detected in {image_name}")
+                            
+                    except Exception as e:
+                        print(f"❌ Error processing {image_name}: {str(e)}")
                         continue
-
-                    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                    
-                    face_locations = face_recognition.face_locations(rgb)
-                    if len(face_locations) > 0:
-                        encodings = face_recognition.face_encodings(rgb, face_locations)
-                        student_encodings.extend(encodings)
-                        print(f"✓ Found {len(face_locations)} faces in {image_name}")
-                    else:
-                        print(f"⚠️ No faces detected in {image_name}")
-                    
-                    os.remove(temp_path)
-                
-                os.rmdir(temp_dir)
                         
                 if student_encodings:
                     for encoding in student_encodings:
