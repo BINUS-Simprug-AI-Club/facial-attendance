@@ -29,61 +29,118 @@ firebase_admin.initialize_app(cred, {'storageBucket': 'facial-attendance-binus.f
 db = firestore.client()
 
 # Configuration settings
+
 CONFIG = {
+
     # Recognition settings
-    "tolerance": 0.65,              # Face matching threshold (lower = stricter)
+
+    "tolerance": 0.55,              # Face matching threshold (lower = stricter)
+
     "frame_resize": 0.25,           # Resize factor for processing (smaller = faster)
+
     "skip_frames": 2,               # Only process every nth frame
+
     "enhanced_facial_recognition": True,  # Use enhanced recognition features
-    
+
+   
+
     # Display settings
+
     "display_fps": True,            # Show FPS counter
+
     "show_all_faces": True,         # Show boxes for unknown faces too
+
     "flip_camera": 1,               # -1: 180°, 0: upside down, 1: mirror
+
     "corner_display": True,         # Show corner screenshot
+
     "show_landmarks": True,         # Display facial landmarks on detected faces
-    
+
+   
+
     # Attendance settings
+
     "latest_login_time": "07:30",   # Latest time to login without being marked late
-    
+
+   
+
     # HRNet settings
-    "device": "cpu",                # Device for face alignment model: 'cpu' or 'cuda'
+
+    "device": "cuda",                # Device for face alignment model: 'cpu' or 'cuda'
+
     "first_run_warning": True,      # Show warning about first-run model download
-    
+
+   
+
     # PIN Authentication settings
-    "confidence_threshold_for_pin": 0.55,  # Threshold below which PIN authentication is required
-    "pin_timeout": 30,              # Seconds to allow PIN entry before timeout
+
+    "confidence_threshold_for_pin": 0.50,  # Threshold below which PIN authentication is required
+
+    "pin_timeout": 15,              # Seconds to allow PIN entry before timeout
+
     "pin_allowed_attempts": 3,      # Number of PIN attempts before timeout
-    
+
+   
+
     # Advanced Recognition settings
-    "min_recognition_threshold": 0.5,     # Minimum threshold to consider a possible match
-    "confident_recognition_threshold": 0.65, # Threshold for confident recognition without verification
+
+    "min_recognition_threshold": 0.55,     # Minimum threshold to consider a possible match
+
+    "confident_recognition_threshold": 0.6, # Threshold for confident recognition without verification
+
     "use_gpu_if_available": True,         # Try to use GPU acceleration if available
+
     "adaptive_processing": True,          # Dynamically adjust processing parameters based on load
+
     "max_parallel_recognitions": 5,       # Maximum number of parallel face recognitions
+
     "face_tracking_enabled": True,        # Enable face tracking to improve performance
+
     "tracking_quality_threshold": 7,      # Quality threshold for the tracker
+
     "max_tracking_age": 30,               # Maximum number of frames to keep tracking without recognition
+
 }
 
+
+
+
 # Motivational quotes based on BINUS Values and IB Learner Profile
+
 MOTIVATIONAL_QUOTES = [
-    "Strive for excellence in all you do today.",
-    "Embrace innovation in your learning journey.",
-    "Perseverance leads to great accomplishments.",
-    "Today is another opportunity for personal growth.",
-    "Your integrity defines who you are as a person.",
-    "Respect for others builds a stronger community.",
-    "Be an inquirer: nurture your curiosity today.",
-    "Think deeply as a knowledgeable learner.",
-    "Be a creative and critical thinker.",
-    "Communicate confidently and creatively today.",
-    "Act with integrity and honesty in all you do.",
-    "Keep an open mind to different perspectives.",
-    "Show caring towards your fellow students.",
-    "Take risks and approach challenges positively.",
-    "Balance your academic, physical, and emotional well-being.",
-    "Reflect thoughtfully on your learning journey."
+
+"Strive for excellence.",
+
+"Embrace innovation",
+
+"Persevere daily.",
+
+"Grow every day.",
+
+"Be honest.",
+
+"Respect others.",
+
+"Stay curious.",
+
+"Think deeply.",
+
+"Be creative.",
+
+"Communicate well.",
+
+"Act with integrity.",
+
+"Stay open-minded.",
+
+"Care for others.",
+
+"Take risks.",
+
+"Stay balanced.",
+
+"Reflect often",
+
 ]
 
 # Global variables
@@ -286,7 +343,7 @@ def display_pin_pad(frame, person_name, class_name):
         # Button colors
         if button == 'C':
             button_color = (0, 80, 160)
-        elif button == '✓':
+        elif button == 'V':
             button_color = (0, 160, 80)
         else:
             button_color = (80, 80, 80)
@@ -469,9 +526,9 @@ def log_attendance(name, class_name=None):
     attendance[attendance_key] = True
     
     if class_name:
-        print(f"👋 Thank you, {name} from {class_name}! Your attendance has been recorded as {status}.")
+        print(f"👋 Thank you, {name} from {class_name}! ({status}).")
     else:
-        print(f"👋 Thank you, {name}! Your attendance has been recorded as {status}.")
+        print(f"👋 Thank you, {name}! ({status}).")
     
     global thank_you_message
     thank_you_message = {
