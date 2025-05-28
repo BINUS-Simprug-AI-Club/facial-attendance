@@ -16,9 +16,10 @@ This facial recognition system provides automated attendance tracking using comp
 - Performance optimization settings
 - Caching of facial encodings for faster startup
 - PIN-based backup authentication when face recognition confidence is low
+- Making sure that no-one is logged more than once
 
 ## Files in this Project
-- `v2.2.py`: The main facial recognition system with HRNet landmark detection and Firebase integration and also a PIN UI when confidence is low
+- `v2.3.py`: The main facial recognition system
 - `make_dataset.py`: Script for creating the facial recognition database and collecting user PINs
 - `serviceAccountKey.json`: Firebase credentials file (must be set up separately)
 
@@ -74,8 +75,8 @@ Before using the recognition system, you need to build a dataset of faces:
 6. **PIN Authentication**: When face recognition confidence is low but above a minimum threshold, the system will prompt for PIN verification as a backup.
 7. **Visual Feedback**: Recognized individuals receive a confirmation message with a motivational quote directly on the screen.
 
-## PIN Authentication System (v2.1.py)
-The v2.1.py version includes a sleek, modern PIN authentication system:
+## PIN Authentication System (v2.3.py)
+The v2.3.py version includes a sleek, modern PIN authentication system:
 
 - PIN verification is triggered when face recognition confidence falls between configurable thresholds
 - Users can enter their PIN via mouse clicks on an on-screen keypad or via keyboard
@@ -103,7 +104,7 @@ The system uses Firebase Firestore to store attendance data and Firebase Storage
 2. Set up a Firebase project and download the serviceAccountKey.json file
 3. Install face-alignment package: `pip install face-alignment`
 4. Build your face dataset using make_dataset.py (including PINs)
-5. Run v2.1.py (with PIN authentication)
+5. Run v2.3.py (with PIN authentication)
 6. Position yourself in front of the camera
 7. When recognized with high confidence, your attendance will be recorded automatically
 8. If recognition confidence is moderate, you'll be prompted to enter your PIN
