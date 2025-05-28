@@ -18,7 +18,7 @@ This facial recognition system provides automated attendance tracking using comp
 - PIN-based backup authentication when face recognition confidence is low
 
 ## Files in this Project
-- `v2.1.py`: The main facial recognition system with HRNet landmark detection and Firebase integration and also a PIN UI when confidence is low
+- `v2.2.py`: The main facial recognition system with HRNet landmark detection and Firebase integration and also a PIN UI when confidence is low
 - `make_dataset.py`: Script for creating the facial recognition database and collecting user PINs
 - `serviceAccountKey.json`: Firebase credentials file (must be set up separately)
 
