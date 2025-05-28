@@ -92,7 +92,7 @@ CONFIG = {
 
     "adaptive_processing": True,          # Dynamically adjust processing parameters based on load
 
-    "max_parallel_recognitions": 5,       # Maximum number of parallel face recognitions
+    "max_parallel_recognitions": 1,       # Maximum number of parallel face recognitions
 
     "face_tracking_enabled": True,        # Enable face tracking to improve performance
 
@@ -387,7 +387,10 @@ def handle_pin_input(key):
     elif key in [ord('c'), ord('C'), 8, 127]:
         pin_verification_mode['input_pin'] = ""
         pin_verification_mode['error_message'] = ""
-
+    
+    # Handle enter/return for verification
+    elif key in [13, ord('v'), ord('V')]:
+        verify_pin()
 
 
 def verify_pin():
@@ -437,7 +440,7 @@ def handle_mouse_click(event, x, y, flags, param):
         '1', '2', '3',
         '4', '5', '6',
         '7', '8', '9',
-        'C', '0', '✓'
+        'C', '0', 'V'
     ]
     
     for i, button in enumerate(buttons):
@@ -462,7 +465,7 @@ def handle_mouse_click(event, x, y, flags, param):
                 pin_verification_mode['error_message'] = ""
                 
             # Handle verify button
-            elif button == '✓':
+            elif button == 'V':
                 verify_pin()
                 
             break
@@ -1005,10 +1008,26 @@ def main():
                                 # Double threshold approach for better accuracy
                                 if best_match_score >= CONFIG["min_recognition_threshold"]:
                                     # We have a potential match
-                                    if best_match_score >= CONFIG["confident_recognition_threshold"]:
+                                    potential_name = known_face_names[best_match_index]
+                                    potential_class = known_face_classes[best_match_index]
+                                    
+                                    # First check if this person is already logged for attendance
+                                    attendance_key = potential_name
+                                    if potential_class:
+                                        attendance_key = f"{potential_class}/{potential_name}"
+                                    
+                                    # If already marked present, indicate that but don't verify again
+                                    if attendance_key in attendance:
+                                        name = potential_name
+                                        class_name = potential_class
+                                        confidence = best_match_score
+                                        # Skip PIN verification and logging attendance again
+                                    
+                                    # New person - proceed with normal recognition flow
+                                    elif best_match_score >= CONFIG["confident_recognition_threshold"]:
                                         # Confident match - mark attendance directly
-                                        name = known_face_names[best_match_index]
-                                        class_name = known_face_classes[best_match_index]
+                                        name = potential_name
+                                        class_name = potential_class
                                         confidence = best_match_score
                                         
                                         if log_attendance(name, class_name):
@@ -1018,8 +1037,8 @@ def main():
                                     # For matches below confident threshold but above minimum threshold
                                     elif CONFIG["min_recognition_threshold"] <= best_match_score < CONFIG["confident_recognition_threshold"]:
                                         # Potential match - require verification
-                                        name = known_face_names[best_match_index]
-                                        class_name = known_face_classes[best_match_index]
+                                        name = potential_name
+                                        class_name = potential_class
                                         confidence = best_match_score
                                         
                                         user_key = f"{class_name}/{name}"
@@ -1095,15 +1114,31 @@ def main():
                         cv2.putText(frame, label, (left, top - 10), 
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                 else:
-                    color = (0, 255, 0)
-                    cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-                    
-                    display_name = name
+                    attendance_key = name
                     if class_name:
-                        display_name = f"{name} ({class_name})"
+                        attendance_key = f"{class_name}/{name}"
                     
-                    cv2.putText(frame, f"{display_name} ({confidence:.2f})", (left, top - 10), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                    # Different colors for already logged vs newly detected people
+                    if attendance_key in attendance:
+                        color = (255, 165, 0)  # Orange for already logged people
+                        cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                        
+                        display_name = name
+                        if class_name:
+                            display_name = f"{name} ({class_name})"
+                        
+                        cv2.putText(frame, f"{display_name} - Already Logged", (left, top - 10), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                    else:
+                        color = (0, 255, 0)  # Green for newly detected people
+                        cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                        
+                        display_name = name
+                        if class_name:
+                            display_name = f"{name} ({class_name})"
+                        
+                        cv2.putText(frame, f"{display_name} ({confidence:.2f})", (left, top - 10), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                 
                 # Draw facial landmarks for this face
                 draw_facial_landmarks(frame, (left, top, right, bottom))
