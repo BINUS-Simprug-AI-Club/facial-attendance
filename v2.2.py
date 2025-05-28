@@ -34,7 +34,7 @@ CONFIG = {
 
     # Recognition settings
 
-    "tolerance": 0.55,              # Face matching threshold (lower = stricter)
+    "tolerance": 0.50,              # Face matching threshold (lower = stricter)
 
     "frame_resize": 0.25,           # Resize factor for processing (smaller = faster)
 
@@ -680,7 +680,7 @@ def display_thank_you_message(frame):
         cv2.putText(frame, f"Thank you, {thank_you_message['name']}!", 
                 (100, frame.shape[0]//2 - 30), 
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-        cv2.putText(frame, f"Your attendance has been recorded as {thank_you_message['status']}", 
+        cv2.putText(frame, f"You are {thank_you_message['status']}", 
                 (100, frame.shape[0]//2), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
