@@ -252,7 +252,7 @@ def display_pin_pad(frame, person_name, class_name):
                  (end_x - 50, pin_display_y + 10), (100, 100, 100), 1)
     
     # Show masked PIN
-    masked_pin = "•" * len(pin_verification_mode['input_pin'])
+    masked_pin = "-" * len(pin_verification_mode['input_pin'])
     cv2.putText(frame, masked_pin, (start_x + 60, pin_display_y), 
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
     
@@ -267,7 +267,7 @@ def display_pin_pad(frame, person_name, class_name):
         '1', '2', '3',
         '4', '5', '6',
         '7', '8', '9',
-        'C', '0', '✓'
+        'C', '0', 'V'
     ]
     
     button_width = 80
@@ -330,10 +330,7 @@ def handle_pin_input(key):
     elif key in [ord('c'), ord('C'), 8, 127]:
         pin_verification_mode['input_pin'] = ""
         pin_verification_mode['error_message'] = ""
-    
-    # Handle enter/return for verification
-    elif key in [ord('\r'), ord('\n'), 13]:
-        verify_pin()
+
 
 
 def verify_pin():
