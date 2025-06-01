@@ -16,7 +16,7 @@ from firebase_admin import credentials, storage
 def main():
     # Initialize Firebase (only if not already initialized)
     if not firebase_admin._apps:
-        cred = credentials.Certificate("serviceAccountKey.json")
+        cred = credentials.Certificate("facial-attendance-binus-firebase-adminsdk-fbsvc-663eb05a63.json")
         # Use the same bucket name as in the main application
         firebase_admin.initialize_app(cred, {
             'storageBucket': 'facial-attendance-binus.firebasestorage.app'
@@ -48,6 +48,22 @@ def main():
     # Ask for the person's name
     name = input("Enter your name: ").strip()
     class_name = input("Enter your class name: ").strip()
+    
+    # Add PIN entry
+    pin = ""
+    while True:
+        pin = input("Enter your PIN (4-6 digits): ").strip()
+        if not pin:
+            print("❌ Error: PIN cannot be empty.")
+            continue
+        if not pin.isdigit():
+            print("❌ Error: PIN must contain only numbers.")
+            continue
+        if not (4 <= len(pin) <= 6):
+            print("❌ Error: PIN must be between 4-6 digits.")
+            continue
+        break
+        
     if not name or not class_name:
         print("❌ Error: Name and class cannot be empty.")
         camera.release()
@@ -56,10 +72,16 @@ def main():
     # Create folder for the person's images
     person_folder = os.path.join(temp_dataset_path, class_name, name)
     os.makedirs(person_folder, exist_ok=True)
+    
+    # Store PIN in Firebase (add this)
+    pin_path = f"{dataset_path}/{class_name}/{name}/pin.txt"
+    pin_blob = bucket.blob(pin_path)
+    pin_blob.upload_from_string(pin)
+    print(f"✅ PIN stored securely in Firebase")
 
     # Configuration
-    images_to_capture = 20
-    countdown_time = 2  # seconds between captures
+    images_to_capture = 10
+    countdown_time = 1  # seconds between captures
     count = 0
     
     print(f"\n📸 We'll capture {images_to_capture} images for facial recognition.")
@@ -196,7 +218,7 @@ def main():
     
     # Instructions for next steps
     print("\n📋 Next steps:")
-    print("1. Run the main facial recognition system (v2.1.py)")
+    print("1. Run the main facial recognition system (v2.3.py)")
     print("2. The system will automatically detect and recognize the newly added face")
     print("3. If recognition doesn't work well, try adding more images with different poses and lighting")
 
