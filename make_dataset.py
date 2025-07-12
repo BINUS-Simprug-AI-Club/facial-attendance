@@ -5,7 +5,6 @@ This tool captures face images for the facial recognition system and
 uploads them to Firebase Storage for use in the attendance system.
 Features intelligent face detection and optimized image processing.
 """
-
 import cv2
 import os
 import time
