@@ -25,6 +25,8 @@ import firebase_admin
 from firebase_admin import credentials, firestore, storage
 import concurrent.futures
 from dotenv import load_dotenv
+# Add SciPy for mathematical operations
+import scipy.spatial as spatial
 
 # Try to import face_alignment for landmarks
 try:
@@ -96,18 +98,18 @@ CONFIG = {
     "target_fps": 30,
     
     # PIN Authentication settings
-    "confidence_threshold_for_pin": 0.45,
+    "confidence_threshold_for_pin": 0.6,
     "pin_timeout": 15,
     "pin_allowed_attempts": 3,
     
     # Advanced Recognition settings - optimized
-    "min_recognition_threshold": 0.52,     # Slightly lower for better detection
-    "confident_recognition_threshold": 0.58, # Optimized threshold
+    "min_recognition_threshold": 0.65,     # Slightly lower for better detection
+    "confident_recognition_threshold": 0.66, # Optimized threshold
     "use_gpu_if_available": True,
     "adaptive_processing": True,
-    "max_parallel_recognitions": 6,        # Increased for better performance
+    "max_parallel_recognitions": 1,        # Increased for better performance
     "face_tracking_enabled": True,
-    "tracking_quality_threshold": 4,       # Lower for faster tracking
+    "tracking_quality_threshold": 6,       # Lower for faster tracking
     "max_tracking_age": 25,                # Optimized for performance
     
     # New high-performance settings
@@ -118,6 +120,13 @@ CONFIG = {
     "cascade_optimization": True,          # Use optimized cascade detection
     "parallel_face_detection": True,      # Parallel detection
     "smart_frame_skipping": True,         # Intelligent frame skipping
+    
+    # Anti-spoofing settings
+    "enable_blink_detection": True,       # Enable blink detection
+    "ear_threshold": 0.2,                # Eye aspect ratio threshold for blink
+    "min_blinks_required": 2,            # Minimum blinks required for verification
+    "blink_detection_time": 5,           # Time window to detect blinks (seconds)
+    "show_eye_landmarks": False,         # Show eye landmarks for debugging
 }
 
 # Motivational quotes based on BINUS Values and IB Learner Profile
@@ -200,6 +209,18 @@ performance_metrics = {
     'peak_fps': 0
 }
 
+# Global variables for blink detection
+blink_detection = {
+    'active': False,
+    'start_time': 0,
+    'blink_count': 0,
+    'last_blink_time': 0,
+    'ear_values': deque(maxlen=10),  # Store recent EAR values
+    'person_name': '',
+    'class_name': '',
+    'status_message': '',
+    'previous_ear': 1.0,  # Initialize with open eye value
+}
 
 def initialize_landmark_predictor():
     """Initialize the facial landmark predictor using face-alignment with HRNet."""
@@ -208,6 +229,7 @@ def initialize_landmark_predictor():
     if not FACE_ALIGNMENT_AVAILABLE:
         print("⚠️ face-alignment package not available. Landmarks disabled.")
         CONFIG["show_landmarks"] = False
+        CONFIG["enable_blink_detection"] = False
         return False
     
     print("🔄 Loading HRNet facial landmark predictor...")
@@ -229,8 +251,8 @@ def initialize_landmark_predictor():
         print(f"❌ Error loading HRNet: {str(e)}")
         print("⚠️ Continuing without facial landmarks detection.")
         CONFIG["show_landmarks"] = False
+        CONFIG["enable_blink_detection"] = False
         return False
-
 
 def load_user_pins():
     """Load user PINs from Firebase Storage."""
@@ -1048,6 +1070,217 @@ def preload_face_encodings():
     else:
         print("⚠️ No face encodings to preload")
 
+def calculate_ear(eye_landmarks):
+    """
+    Calculate Eye Aspect Ratio (EAR) based on facial landmarks.
+    
+    EAR = (||p2-p6|| + ||p3-p5||) / (2 * ||p1-p4||)
+    
+    Args:
+        eye_landmarks: List of (x,y) coordinates for eye landmarks
+        
+    Returns:
+        float: Eye Aspect Ratio
+    """
+    if len(eye_landmarks) != 6:
+        return 1.0  # Default open eye value
+    
+    try:
+        # Compute euclidean distances
+        # Vertical distances
+        A = spatial.distance.euclidean(eye_landmarks[1], eye_landmarks[5])
+        B = spatial.distance.euclidean(eye_landmarks[2], eye_landmarks[4])
+        
+        # Horizontal distance
+        C = spatial.distance.euclidean(eye_landmarks[0], eye_landmarks[3])
+        
+        # Calculate EAR
+        ear = (A + B) / (2.0 * C) if C > 0 else 1.0
+        return ear
+    except Exception as e:
+        print(f"⚠️ Error calculating EAR: {str(e)}")
+        return 1.0
+
+def get_eye_landmarks(landmarks):
+    """
+    Extract eye landmarks from the full set of facial landmarks.
+    HRNet landmarks have specific indices for left and right eye.
+    
+    Args:
+        landmarks: Array of facial landmarks from HRNet
+        
+    Returns:
+        tuple: (left_eye_landmarks, right_eye_landmarks)
+    """
+    if landmarks is None or len(landmarks) < 68:
+        return None, None
+    
+    try:
+        # HRNet provides 68-point landmarks
+        # Left eye indices (36-41)
+        left_eye = landmarks[36:42]
+        
+        # Right eye indices (42-47)
+        right_eye = landmarks[42:48]
+        
+        return left_eye, right_eye
+    except Exception as e:
+        print(f"⚠️ Error extracting eye landmarks: {str(e)}")
+        return None, None
+
+def detect_blink(ear_value):
+    """
+    Detect a blink based on EAR values.
+    A blink is detected when EAR drops below threshold and then rises back.
+    
+    Args:
+        ear_value: Current Eye Aspect Ratio value
+        
+    Returns:
+        bool: True if blink detected, False otherwise
+    """
+    global blink_detection
+    
+    # Store the current EAR value
+    blink_detection['ear_values'].append(ear_value)
+    
+    # Blink is detected when EAR drops below threshold and then rises back
+    if (blink_detection['previous_ear'] > CONFIG['ear_threshold'] and 
+        ear_value <= CONFIG['ear_threshold']):
+        # Potential blink start
+        blink_start = True
+    else:
+        blink_start = False
+    
+    if (blink_detection['previous_ear'] <= CONFIG['ear_threshold'] and 
+        ear_value > CONFIG['ear_threshold']):
+        # Potential blink end - count as a blink
+        if time.time() - blink_detection['last_blink_time'] > 0.2:  # Prevent counting rapid blinks
+            blink_detection['blink_count'] += 1
+            blink_detection['last_blink_time'] = time.time()
+            blink_detection['status_message'] = f"Blink detected! ({blink_detection['blink_count']}/{CONFIG['min_blinks_required']})"
+            print(f"👁️ Blink detected! Count: {blink_detection['blink_count']}")
+            
+            # Check if we've reached required blinks
+            if blink_detection['blink_count'] >= CONFIG['min_blinks_required']:
+                return True
+    
+    # Update previous EAR
+    blink_detection['previous_ear'] = ear_value
+    return False
+
+def draw_eye_landmarks(frame, landmarks, left_eye, right_eye, ear_value):
+    """
+    Draw eye landmarks and EAR value on the frame for debugging.
+    
+    Args:
+        frame: Video frame
+        landmarks: All facial landmarks
+        left_eye: Left eye landmarks
+        right_eye: Right eye landmarks
+        ear_value: Current EAR value
+    """
+    if not CONFIG["show_eye_landmarks"]:
+        return
+    
+    try:
+        # Draw all facial landmarks
+        for (x, y) in landmarks:
+            cv2.circle(frame, (int(x), int(y)), 1, (0, 255, 255), -1)
+            
+        # Draw left eye landmarks
+        for (x, y) in left_eye:
+            cv2.circle(frame, (int(x), int(y)), 2, (0, 0, 255), -1)
+            
+        # Draw right eye landmarks
+        for (x, y) in right_eye:
+            cv2.circle(frame, (int(x), int(y)), 2, (255, 0, 0), -1)
+            
+        # Display EAR value
+        cv2.putText(frame, f"EAR: {ear_value:.2f}", (10, 60), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    except Exception:
+        pass  # Fail silently for drawing
+
+def start_blink_detection(name, class_name):
+    """
+    Start the blink detection process for anti-spoofing.
+    
+    Args:
+        name: Person's name
+        class_name: Class name
+    """
+    global blink_detection
+    
+    blink_detection = {
+        'active': True,
+        'start_time': time.time(),
+        'blink_count': 0,
+        'last_blink_time': 0,
+        'ear_values': deque(maxlen=10),
+        'person_name': name,
+        'class_name': class_name,
+        'status_message': "Please blink naturally...",
+        'previous_ear': 1.0
+    }
+    
+    print(f"👁️ Anti-spoofing activated: Waiting for {CONFIG['min_blinks_required']} blinks from {name}")
+
+def display_blink_detection_ui(frame):
+    """Display blink detection UI overlay on frame."""
+    if not blink_detection['active']:
+        return frame
+    
+    # Calculate time remaining
+    elapsed_time = time.time() - blink_detection['start_time']
+    time_remaining = max(0, CONFIG['blink_detection_time'] - elapsed_time)
+    
+    # Create overlay
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (30, 30, 30), -1)
+    
+    # Set opacity
+    alpha = 0.7
+    frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+    
+    # Draw instruction box
+    cv2.rectangle(frame, (50, 50), (frame.shape[1]-50, frame.shape[0]-50), (0, 100, 200), 3)
+    
+    # Add title and instructions
+    cv2.putText(frame, "ANTI-SPOOFING VERIFICATION", 
+                (frame.shape[1]//2 - 200, 100), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255), 2)
+    
+    cv2.putText(frame, f"Hello, {blink_detection['person_name']}!", 
+                (frame.shape[1]//2 - 150, 150), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                
+    cv2.putText(frame, "Please blink naturally to verify you are a real person", 
+                (frame.shape[1]//2 - 250, 190), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+                
+    # Show status message
+    cv2.putText(frame, blink_detection['status_message'], 
+                (frame.shape[1]//2 - 150, 250), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    
+    # Show time remaining with progress bar
+    progress_width = int((time_remaining / CONFIG['blink_detection_time']) * (frame.shape[1] - 200))
+    cv2.rectangle(frame, (100, frame.shape[0] - 100), 
+                 (frame.shape[1] - 100, frame.shape[0] - 80), (50, 50, 50), -1)
+    cv2.rectangle(frame, (100, frame.shape[0] - 100), 
+                 (100 + progress_width, frame.shape[0] - 80), (0, 200, 0), -1)
+    cv2.putText(frame, f"Time remaining: {int(time_remaining)}s", 
+                (100, frame.shape[0] - 110), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    
+    # Handle timeout
+    if time_remaining <= 0:
+        blink_detection['active'] = False
+        print(f"⏱️ Blink detection timed out for {blink_detection['person_name']}")
+    
+    return frame
+
 def ultra_fast_face_recognition(face_encoding, use_cache=True):
     """Ultra-fast face recognition with GPU acceleration and caching."""
     start_time = time.time()
@@ -1105,10 +1338,19 @@ def ultra_fast_face_recognition(face_encoding, use_cache=True):
             
             confidence = max(0, 1 - best_distance)
             
+            # More strict threshold check
             if confidence >= CONFIG["min_recognition_threshold"]:
-                name = preloaded_face_data['names'][best_match_index]
-                class_name = preloaded_face_data['classes'][best_match_index]
-                
+                # Additional check: if this face is too different from any known faces
+                if best_distance <= 0.6:  # This is an additional safety threshold
+                    name = preloaded_face_data['names'][best_match_index]
+                    class_name = preloaded_face_data['classes'][best_match_index]
+                    print(f"Match: {name} with confidence {confidence:.2f}")
+                else:
+                    # Force as unknown if distance is too large
+                    name = "Unknown"
+                    class_name = ""
+                    confidence = 0.0
+                    print(f"Rejected match with distance {best_distance:.2f}")
         except Exception as e:
             print(f"⚠️ Recognition error: {e}")
     
@@ -1345,7 +1587,7 @@ class UltraFastFaceTracker:
 
 def main():
     """Main function with ultra-high performance optimizations."""
-    global pin_verification_mode
+    global pin_verification_mode, blink_detection
     
     print("🚀 Starting Ultra-High Performance Facial Recognition System...")
     
@@ -1423,8 +1665,79 @@ def main():
                 
                 frame = display_pin_pad(frame, pin_verification_mode['name'], 
                                        pin_verification_mode['class_name'])
+            elif blink_detection['active']:
+                # Handle blink detection mode
+                small_frame = cv2.resize(frame, (0, 0), 
+                                       fx=CONFIG["frame_resize"], 
+                                       fy=CONFIG["frame_resize"],
+                                       interpolation=cv2.INTER_LINEAR)
+                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+                
+                # Get face locations for the person being verified
+                face_locations_raw = face_detector.detect_faces_optimized(small_frame)
+                
+                if face_locations_raw and facial_landmark_predictor is not None:
+                    # Process the largest face (closest to the camera)
+                    largest_face = max(face_locations_raw, key=lambda rect: rect[2] * rect[3])
+                    x, y, w, h = largest_face
+                    
+                    # Get face region with some margin
+                    face_region = rgb_small_frame[max(0, y-30):min(rgb_small_frame.shape[0], y+h+30), 
+                                                max(0, x-30):min(rgb_small_frame.shape[1], x+w+30)]
+                    
+                    if face_region.size > 0:
+                        # Get landmarks
+                        try:
+                            landmarks = facial_landmark_predictor.get_landmarks_from_image(face_region)
+                            
+                            if landmarks and len(landmarks) > 0:
+                                # Adjust coordinates to the original small frame
+                                x_offset = max(0, x-30)
+                                y_offset = max(0, y-30)
+                                
+                                landmarks_adjusted = [(p[0] + x_offset, p[1] + y_offset) for p in landmarks[0]]
+                                
+                                # Extract eye landmarks
+                                left_eye, right_eye = get_eye_landmarks(landmarks_adjusted)
+                                
+                                if left_eye is not None and right_eye is not None:
+                                    # Calculate average EAR
+                                    left_ear = calculate_ear(left_eye)
+                                    right_ear = calculate_ear(right_eye)
+                                    avg_ear = (left_ear + right_ear) / 2.0
+                                    
+                                    # Scale coordinates back to original frame size
+                                    scale = 1.0 / CONFIG["frame_resize"]
+                                    scaled_landmarks = [(int(p[0] * scale), int(p[1] * scale)) 
+                                                       for p in landmarks_adjusted]
+                                    scaled_left_eye = [(int(p[0] * scale), int(p[1] * scale)) 
+                                                      for p in left_eye]
+                                    scaled_right_eye = [(int(p[0] * scale), int(p[1] * scale)) 
+                                                       for p in right_eye]
+                                    
+                                    # Draw eye landmarks
+                                    draw_eye_landmarks(frame, scaled_landmarks, 
+                                                     scaled_left_eye, scaled_right_eye, avg_ear)
+                                    
+                                    # Detect blink
+                                    if detect_blink(avg_ear):
+                                        print(f"✅ Blink verification successful for {blink_detection['person_name']}")
+                                        blink_detection['status_message'] = "Verification successful!"
+                                        
+                                        # Log attendance after successful blink verification
+                                        log_attendance(blink_detection['person_name'], 
+                                                      blink_detection['class_name'])
+                                        
+                                        # Show success message for a moment
+                                        time.sleep(1)
+                                        blink_detection['active'] = False
+                        except Exception as e:
+                            print(f"⚠️ Error processing landmarks: {e}")
+                
+                # Display blink detection UI
+                frame = display_blink_detection_ui(frame)
             else:
-                # Ultra-fast face recognition mode
+                # Regular face recognition mode
                 skip_counter += 1
                 process_this_frame = skip_counter % CONFIG["skip_frames"] == 0
                 frame_count += 1
