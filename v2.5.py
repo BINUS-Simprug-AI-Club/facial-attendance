@@ -66,7 +66,7 @@ db = firestore.client()
 CONFIG = {
     # Recognition settings - optimized for speed/accuracy balance
     "tolerance": 0.45,              # Slightly stricter for better accuracy
-    "frame_resize": 0.35,           # Optimized size for speed/quality balance
+    "frame_resize": 0.4,           # Optimized size for speed/quality balance, higher means better quality
     "skip_frames": 1,               # Process more frames for better tracking
     "enhanced_facial_recognition": True,
     
@@ -103,13 +103,13 @@ CONFIG = {
     "pin_allowed_attempts": 3,
     
     # Advanced Recognition settings - optimized
-    "min_recognition_threshold": 0.65,     # Slightly lower for better detection
+    "min_recognition_threshold": 0.64,     # Slightly lower for better detection
     "confident_recognition_threshold": 0.66, # Optimized threshold
     "use_gpu_if_available": True,
     "adaptive_processing": True,
     "max_parallel_recognitions": 1,        # Increased for better performance
     "face_tracking_enabled": True,
-    "tracking_quality_threshold": 6,       # Lower for faster tracking
+    "tracking_quality_threshold": 8,       # Lower for faster tracking
     "max_tracking_age": 25,                # Optimized for performance
     
     # New high-performance settings
