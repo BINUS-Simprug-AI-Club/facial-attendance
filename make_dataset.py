@@ -301,7 +301,7 @@ def main():
     
     # Instructions for next steps
     print("\n📋 Next steps:")
-    print("1. Run the main facial recognition system (v2.5.py)")
+    print("1. Run the main facial recognition system.")
     print("2. The system will automatically detect and recognize the newly added face")
     print("3. If recognition doesn't work well, try adding more images with different poses and lighting")
 
