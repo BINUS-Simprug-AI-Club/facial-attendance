@@ -66,7 +66,7 @@ db = firestore.client()
 CONFIG = {
     # Recognition settings - optimized for speed/accuracy balance
     "tolerance": 0.45,              # Slightly stricter for better accuracy
-    "frame_resize": 0.4,           # Optimized size for speed/quality balance, higher means better quality
+    "frame_resize": 0.5,           # Optimized size for speed/quality balance, higher means better quality
     "skip_frames": 1,               # Process more frames for better tracking
     "enhanced_facial_recognition": True,
     
@@ -103,15 +103,18 @@ CONFIG = {
     "pin_allowed_attempts": 3,
     
     # Advanced Recognition settings - optimized
-    "min_recognition_threshold": 0.64,     # Slightly lower for better detection
-    "confident_recognition_threshold": 0.66, # Optimized threshold
+    "min_recognition_threshold": 0.6,     # Slightly lower for better detection
+    "confident_recognition_threshold": 0.61, # Optimized threshold
     "use_gpu_if_available": True,
     "adaptive_processing": True,
     "max_parallel_recognitions": 1,        # Increased for better performance
     "face_tracking_enabled": True,
-    "tracking_quality_threshold": 8,       # Lower for faster tracking
+    "tracking_quality_threshold": 12,       # Lower for faster tracking
     "max_tracking_age": 25,                # Optimized for performance
     
+    # debugging
+    "show_face_boxes": False,
+
     # New high-performance settings
     "batch_processing_size": 12,           # Larger batches
     "use_fast_detector": True,
@@ -1377,19 +1380,35 @@ def parallel_face_encoding(rgb_frame, face_locations):
     if not face_locations:
         return []
     
-    # Use parallel processing for multiple faces
+    # If face_alignment is available, use it for more accurate landmark-based encoding
+    if 'facial_landmark_predictor' in globals() and facial_landmark_predictor is not None and FACE_ALIGNMENT_AVAILABLE:
+        all_encodings = []
+        for (top, right, bottom, left) in face_locations:
+            # Extract face region
+            face_img = rgb_frame[top:bottom, left:right]
+            try:
+                landmarks = facial_landmark_predictor.get_landmarks_from_image(face_img)
+                if landmarks and len(landmarks) > 0:
+                    # Use face_recognition.face_encodings without model argument (default is hog)
+                    encoding = face_recognition.face_encodings(face_img, [(0, face_img.shape[1], face_img.shape[0], 0)])
+                    if encoding:
+                        all_encodings.append(encoding[0])
+            except Exception as e:
+                print(f"⚠️ face_alignment encoding error: {e}")
+        encoding_time = time.time() - start_time
+        performance_metrics['encoding_times'].append(encoding_time)
+        return all_encodings
+    # Otherwise, use the original CNN-based encoding
     if len(face_locations) > 1 and CONFIG["max_parallel_recognitions"] > 1:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(face_locations), CONFIG["encoding_threads"])) as executor:
             futures = []
-            
             # Split face locations into batches
             batch_size = max(1, len(face_locations) // CONFIG["encoding_threads"])
             for i in range(0, len(face_locations), batch_size):
                 batch = face_locations[i:i + batch_size]
-                future = executor.submit(face_recognition.face_encodings, rgb_frame, batch)
+                # Always use model as a keyword argument
+                future = executor.submit(lambda *args, **kwargs: face_recognition.face_encodings(*args, **kwargs), rgb_frame, batch, model="cnn")
                 futures.append(future)
-            
-            # Collect results
             all_encodings = []
             for future in concurrent.futures.as_completed(futures):
                 try:
@@ -1397,14 +1416,12 @@ def parallel_face_encoding(rgb_frame, face_locations):
                     all_encodings.extend(batch_encodings)
                 except Exception as e:
                     print(f"⚠️ Batch encoding error: {e}")
-            
             encoding_time = time.time() - start_time
             performance_metrics['encoding_times'].append(encoding_time)
             return all_encodings
     else:
-        # Single-threaded for small numbers of faces
         try:
-            encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+            encodings = face_recognition.face_encodings(rgb_frame, face_locations, model="cnn")
             encoding_time = time.time() - start_time
             performance_metrics['encoding_times'].append(encoding_time)
             return encodings
@@ -1585,6 +1602,96 @@ class UltraFastFaceTracker:
         
         return self.tracks
 
+def check_lighting_conditions(frame):
+    """
+    Check if the frame has adequate lighting for face detection.
+    
+    Args:
+        frame: The video frame to analyze
+        
+    Returns:
+        tuple: (is_lighting_good, brightness_value, message)
+    """
+    # Convert to grayscale for brightness analysis
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Calculate average brightness
+    brightness = np.mean(gray)
+    
+    # Calculate contrast using standard deviation
+    contrast = np.std(gray)
+    
+    # Check for overexposed areas (bright spots)
+    overexposed = np.sum(gray > 240) / gray.size
+    
+    # Check for underexposed areas (dark spots)
+    underexposed = np.sum(gray < 30) / gray.size
+    
+    # Determine if lighting is good
+    is_good = True
+    message = "Lighting OK"
+    
+    if brightness < 40:
+        is_good = False
+        message = "Too dark! Please turn on more lights."
+    elif brightness > 210:
+        is_good = False
+        message = "Too bright! Reduce lighting or adjust camera."
+    elif contrast < 15:
+        is_good = False
+        message = "Low contrast! Improve lighting conditions."
+    elif overexposed > 0.15:
+        is_good = False
+        message = "Overexposed areas detected! Reduce bright light sources."
+    elif underexposed > 0.30:
+        is_good = False
+        message = "Underexposed areas detected! Increase lighting."
+    
+    return (is_good, brightness, message)
+
+def display_lighting_warning(frame, message, brightness):
+    """Display warning message when lighting conditions are poor."""
+    # Create semi-transparent overlay
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (frame.shape[1], 80), (0, 0, 0), -1)
+    
+    # Set the opacity of the overlay
+    alpha = 0.7
+    frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+    
+    # Show warning message
+    cv2.putText(frame, "⚠️ " + message, (20, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    
+    # Show brightness meter
+    cv2.putText(frame, f"Brightness: {brightness:.1f}", (20, 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 1)
+    
+    # Draw brightness meter
+    cv2.rectangle(frame, (220, 50), (220 + 200, 65), (50, 50, 50), -1)
+    
+    # Determine color based on brightness
+    if brightness < 40:  # Too dark
+        bar_color = (0, 0, 150)  # Dark red
+    elif brightness > 210:  # Too bright
+        bar_color = (0, 150, 255)  # Yellow-orange
+    else:
+        # Gradient from red to green
+        green = min(255, int((brightness / 120) * 255))
+        red = min(255, int(((255 - brightness) / 120) * 255))
+        bar_color = (0, green, red)
+    
+    # Draw filled portion of brightness meter
+    filled_width = min(200, int((brightness / 255) * 200))
+    cv2.rectangle(frame, (220, 50), (220 + filled_width, 65), bar_color, -1)
+    
+    return frame
+
+# Initialize the lighting check variables
+lighting_check_enabled = True
+lighting_check_interval = 5  # Check every 5 seconds
+last_lighting_check_time = time.time()
+
 def main():
     """Main function with ultra-high performance optimizations."""
     global pin_verification_mode, blink_detection
@@ -1657,6 +1764,34 @@ def main():
             
             frame = cv2.flip(frame, CONFIG["flip_camera"])
             
+            # Check lighting conditions before proceeding with face detection
+            lighting_good, brightness, lighting_message = check_lighting_conditions(frame)
+            
+            if not lighting_good:
+                # Display warning about poor lighting
+                frame = display_lighting_warning(frame, lighting_message, brightness)
+                
+                # Skip face detection in poor lighting conditions
+                if CONFIG["display_fps"]:
+                    fps_color = (0, 255, 0) if fps >= CONFIG["target_fps"] * 0.8 else (0, 255, 255)
+                    cv2.putText(frame, f"FPS: {fps:.1f} (Peak: {performance_metrics.get('peak_fps', 0):.1f})", 
+                              (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, fps_color, 2)
+                
+                frame = display_performance_metrics(frame)
+                frame = display_thank_you_message(frame)
+                
+                # Record frame processing time
+                frame_time = time.time() - frame_start_time
+                performance_metrics['frame_times'].append(frame_time)
+                
+                cv2.imshow('Ultra-Fast Face Recognition', frame)
+                
+                # Handle keyboard input
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    break
+                continue  # Skip the rest of the loop and start with a new frame
+            
             # Handle PIN verification mode
             if pin_verification_mode['active']:
                 if time.time() - pin_verification_mode['start_time'] > CONFIG["pin_timeout"]:
@@ -1722,6 +1857,7 @@ def main():
                                     # Detect blink
                                     if detect_blink(avg_ear):
                                         print(f"✅ Blink verification successful for {blink_detection['person_name']}")
+                                       
                                         blink_detection['status_message'] = "Verification successful!"
                                         
                                         # Log attendance after successful blink verification
@@ -1871,8 +2007,9 @@ def main():
                             label = f"{name} ({class_name}) ({confidence:.2f})"
                     
                     # Ultra-fast rectangle and text rendering
-                    cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-                    cv2.putText(frame, label, (left, top - 10), 
+                    if CONFIG.get("show_face_boxes", False):
+                        cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                        cv2.putText(frame, label, (left, top - 10), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             
             # Display performance metrics
@@ -1925,3 +2062,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
