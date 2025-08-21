@@ -26,13 +26,6 @@ import scipy.spatial as spatial
 # Try to import face_alignment for landmarks
 try:
     import face_alignment
-    FACE_ALIGNMENT_AVAILABLE = True
-except ImportError:
-    FACE_ALIGNMENT_AVAILABLE = False
-
-# Try to import dlib for faster face detection
-try:
-    import dlib
     DLIB_AVAILABLE = True
 except ImportError:
     DLIB_AVAILABLE = False
